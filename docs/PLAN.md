@@ -22,11 +22,11 @@
 - [x] Docker Compose: nginx LB + 2 gateway instances + Redis + mock backend
 
 ## Phase 2 — Core Rate Limiting
-- [ ] Redis client wrapper
-- [ ] Rate limiter interface (Strategy Pattern)
-- [ ] Token Bucket algorithm with Lua script for atomic Redis ops
-- [ ] Sliding Window Counter algorithm with Lua script
-- [ ] Unit tests for both algorithms
+- [x] Redis client wrapper
+- [x] Rate limiter interface (Strategy Pattern)
+- [x] Token Bucket algorithm with Lua script for atomic Redis ops
+- [x] Sliding Window Counter algorithm with Lua script
+- [x] Unit tests for both algorithms
 
 ## Phase 3 — Policy Engine
 - [ ] YAML config loader
