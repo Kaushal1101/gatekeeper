@@ -19,7 +19,7 @@
 - [x] Go module setup and folder structure
 - [x] Mock backend (`cmd/mock-backend/main.go`)
 - [x] Gateway skeleton (`cmd/gateway/main.go`)
-- [ ] Docker Compose: nginx LB + 2 gateway instances + Redis + mock backend
+- [x] Docker Compose: nginx LB + 2 gateway instances + Redis + mock backend
 
 ## Phase 2 — Core Rate Limiting
 - [ ] Redis client wrapper

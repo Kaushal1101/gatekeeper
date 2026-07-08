@@ -23,10 +23,10 @@ func main() {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", handleHealth)
-	mux.Handle("/", loggingMiddleware(proxy))
+	mux.Handle("/", proxy)
 
 	log.Printf("gateway listening on :8080 → %s", backendAddr)
-	if err := http.ListenAndServe(":8080", mux); err != nil {
+	if err := http.ListenAndServe(":8080", loggingMiddleware(mux)); err != nil {
 		log.Fatal(err)
 	}
 }

@@ -18,6 +18,20 @@ All five services run in Docker Compose on a private internal network. Clients o
 
 ---
 
+## ADR-002 — Git Workflow: Feature Branches + PRs per Phase
+
+**Decision:** Each phase gets its own branch (e.g. `phase-2-rate-limiting`), merged to `main` via a pull request when complete and verified.
+
+**Reasons:**
+
+- Demonstrates production-style engineering workflow to internship recruiters reviewing the GitHub profile
+- PR descriptions serve as built-in documentation of what was built and why, which mirrors what interviewers ask about
+- Clean `main` history — only complete, working phases land on the default branch
+
+**Tradeoff:** Slight overhead per phase. Negligible given the project cadence.
+
+---
+
 ## ADR-001 — Language: Go over Java
 
 **Decision:** Build GateKeeper in Go.
