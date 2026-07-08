@@ -41,3 +41,30 @@
 - `loggingMiddleware` wraps the top-level mux so all routes are covered, not just the proxy
 
 ### Phase 1 status: complete
+
+---
+
+## 2026-07-08 — Phase 2 complete: Core Rate Limiting (branch: phase-2-rate-limiting)
+
+### Work completed
+- `internal/redis/client.go` — `NewClient()` reads `REDIS_ADDR` env var (default: `localhost:6379`), returns a configured `*goredis.Client`
+- `internal/limiter/limiter.go` — `Limiter` interface: `Allow(ctx, key, cost) (bool, error)`
+- `internal/limiter/tokenbucket/` — Token Bucket implementation:
+  - `token_bucket.lua` — atomic Lua script: lazy refill via elapsed time, HMGET/HSET on a single Redis hash, TTL auto-set to `ceil(capacity/refillRate)*2`
+  - `tokenbucket.go` — Go wrapper using `//go:embed` and `goredis.NewScript`; unexported `allow(nowMs)` for clock injection
+  - `tokenbucket_test.go` — 5 tests: within limit, exceeds limit, refill over time, weighted cost, isolated keys
+- `internal/limiter/slidingwindow/` — Sliding Window Counter implementation:
+  - `sliding_window.lua` — two Redis string keys (current + previous window); weighted formula: `prev * (1 - elapsed_fraction) + curr`
+  - `slidingwindow.go` — same pattern as tokenbucket
+  - `slidingwindow_test.go` — 6 tests including previous-window weighting verification
+- All 11 tests pass via miniredis (no real Redis required for tests)
+- `/interviewnotes` command created; `docs/interviewnotes.md` written for `internal/limiter`
+
+### Decisions made
+- **Lua scripts for atomicity** — prevents TOCTOU race conditions across multiple gateway instances; simpler than WATCH/MULTI/EXEC
+- **Lua scripts colocated with packages** — `//go:embed` cannot reference parent directories; colocation is cleaner than workarounds
+- **Plain string keys** — `Limiter` takes `key string`; the policy engine constructs the appropriate key per scope
+- **Clock injection via unexported `allow(nowMs)`** — deterministic tests without sleeping; real production path uses `time.Now()`
+- **miniredis for tests** — full Lua execution without a running Redis instance; fast, isolated, no Docker dependency for unit tests
+
+### Phase 2 status: complete
