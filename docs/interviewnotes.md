@@ -30,6 +30,19 @@ The `Limiter` interface takes `key string`, not structured fields like IP or use
 ### Weighted cost
 Every `Allow` call takes a `cost int`. A lightweight endpoint might cost 1 token; an expensive endpoint might cost 5. This lets a single rate limit policy reflect real resource consumption rather than assuming all requests are equal.
 
+### Why Redis over an in-process cache
+
+An in-process cache (e.g. a Go `map` protected by a `sync.Mutex`) lives inside a single process's RAM. Reading it requires no network — the CPU reaches directly into memory (~100ns). But GateKeeper runs two gateway instances. Each would maintain its own separate copy of every counter, so a user hitting gateway-1 and gateway-2 alternately would see two independent limits and effectively double their allowance. The rate limiter would be broken.
+
+Redis is a separate process that both gateways connect to, making it a single shared source of truth. The cost is a **network hop** — even on the same machine, Go must send data out through a network socket, Redis processes it, and sends a response back (~0.1ms locally). This is roughly 1000× slower than an in-process read, but still imperceptible on a per-request basis and a necessary tradeoff for correctness across instances.
+
+```
+In-process:  CPU → RAM                              ~100ns   (no hop)
+Redis:       CPU → network socket → Redis → back    ~0.1ms   (one round-trip hop)
+```
+
+The mutex approach would work for a single gateway but fails the moment you scale horizontally. Redis is the correct tool precisely because it externalises state.
+
 ### Clock injection for testability
 Both implementations have a public `Allow(ctx, key, cost)` and an unexported `allow(ctx, key, cost, nowMs int64)`. The public method calls `time.Now().UnixMilli()`. The unexported method is called directly in tests with explicit timestamps, making time-dependent tests (refill, window reset) instant and deterministic — no sleeping required.
 
@@ -91,6 +104,9 @@ Creates a `*redis.Script` object which uses `EVALSHA` for efficient execution (s
 ---
 
 ## 4. Interview Questions
+
+**Q: Why use Redis instead of an in-process cache like a Go map?**
+A: GateKeeper runs two gateway instances behind a load balancer. An in-process cache lives inside one process — each gateway would have its own independent counters, so a client alternating between gateway-1 and gateway-2 would see two separate limits and effectively double their allowance. Redis is a single external process that both gateways share, so every counter is consistent regardless of which instance handles the request. The cost is a network hop (~0.1ms locally), which is negligible per request but necessary for correctness across instances. A Go map with a mutex would work fine for a single-instance deployment, but fails the moment you scale horizontally.
 
 **Q: Why use Lua scripts instead of regular Redis commands?**
 A: Rate limiting requires a read-modify-write cycle: read the current count, check if the request is within the limit, then update the count. If these are separate Redis commands, two gateway instances can both read the same count simultaneously, both decide the request is allowed, and both decrement — allowing a request that should have been blocked. Lua scripts run atomically in Redis's single-threaded command loop, so no other command can interleave. It's the simplest way to get atomic multi-step operations in Redis.

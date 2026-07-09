@@ -68,3 +68,26 @@
 - **miniredis for tests** — full Lua execution without a running Redis instance; fast, isolated, no Docker dependency for unit tests
 
 ### Phase 2 status: complete
+
+---
+
+## 2026-07-09 — Phase 3 complete: Policy Engine (branch: phase-2-rate-limiting)
+
+### Work completed
+- `config/config.yaml` — operator-facing rate limit config: three endpoints (`/api/fast`, `/api/slow`, `/api/expensive`), each with an `algorithm` toggle and two scopes (`api_key`, `ip`); both algorithm param sets always present to enable one-line algorithm switching
+- `internal/config/config.go` — `Config`, `Policy`, `Scope` structs with `Load(path string)` and `EffectiveCost()` helper (guards against YAML-omitted `cost` field defaulting to Go's zero value)
+- `internal/policy/policy.go` — `Matcher` with two phases:
+  - `New(cfg, redisClient)` — compiles config into limiter instances at startup; parses durations, selects algorithms, builds `compiledPolicy` list once
+  - `Match(path, apiKey, ip)` — at request time, finds matching policy and returns `[]Check` (limiter + Redis key + cost per scope); returns configured default action if no policy matches
+- `internal/policy/policy_test.go` — 6 tests: known path returns correct checks, unknown path respects default deny/allow, Redis keys encode path+scope+identity, cost defaults to 1 when omitted, explicit cost preserved, correct policy selected when multiple policies present
+- Added `gopkg.in/yaml.v3` dependency
+
+### Decisions made
+- **Option A multi-scope layout** — scopes are sub-entries within one policy block rather than separate top-level entries per scope; toggling `algorithm:` in one place covers all scopes on that endpoint simultaneously
+- **Both algorithm params always present** — `capacity`/`refill_rate` (token bucket) and `limit`/`window` (sliding window) coexist in the same scope block; inactive params are ignored; enables algorithm comparison with a single field change and restart
+- **Compile at startup, match at request time** — `New()` does all expensive work (parsing, object creation, algorithm selection) once; `Match()` is a fast linear scan; rate limit state lives in Redis so rebuilding the `Matcher` is stateless and safe
+- **Redis key format** `/path:scope:value` (e.g. `/api/fast:api_key:abc123`) — encodes all three isolation dimensions so counters are always per-endpoint, per-scope-type, per-identity
+- **`Matcher` returns `[]Check`, does not enforce** — enforcement (calling `Allow()`, applying AND logic, returning 429) is the middleware's responsibility; clean separation of policy lookup from policy enforcement
+- **`default_action`** in YAML controls fail-open (`allow`) vs fail-closed (`deny`) for unmatched paths; no default-default — operator must be explicit
+
+### Phase 3 status: complete
