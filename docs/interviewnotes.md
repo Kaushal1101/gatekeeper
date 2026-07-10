@@ -210,7 +210,7 @@ Go initialises all numeric struct fields to `0` when deserialised from YAML if t
 
 ## 3. Important Implementation Details
 
-**`Config` struct** — top-level container. `DefaultAction string` is `"allow"` or `"deny"`, interpreted by the policy engine as `defaultAllow bool`. The string is kept here (not a bool) so the YAML is readable to an operator who may not know the codebase.
+**`Config` struct** — top-level container. `DefaultAction string` is `"allow"` or `"deny"`, interpreted by the policy engine as `defaultAllow bool`. `OnLimiterError string` is `"allow"` or `"deny"`, controlling what happens when a rate limiter returns an error (Redis down). Both are kept as strings (not bools) so the YAML is readable to an operator who may not know the codebase.
 
 **`Policy` struct** — one entry per endpoint. `Algorithm string` is free-form here; validation happens in the policy engine's `buildLimiter` switch, which returns an error for unknown values. The config package itself does no validation beyond YAML syntax.
 
@@ -277,6 +277,7 @@ A: YAML is more readable for operator-facing config — it supports comments (us
 - **No validation in the config package — validation is in the policy engine.** Errors from unknown algorithms are returned with full context from `buildLimiter`.
 - **`Window` is a string, parsed later with `time.ParseDuration`.** yaml.v3 cannot unmarshal duration strings natively.
 - **`default_action` is a string in config, converted to `bool` in policy.** Any value other than `"allow"` means deny. Typos fail closed.
+- **`on_limiter_error` controls behavior when Redis is unavailable.** `"deny"` returns 500 (fail-closed, default); `"allow"` passes traffic through (fail-open). Converted to `onErrorAllow bool` in the policy engine.
 - **`Load` reads the file once at startup.** There is no watching or hot-reload. Config changes require a process restart.
 - **Both algorithm param sets live in every `Scope`.** Unused ones are ignored. This is a deliberate design choice to reduce friction when toggling algorithms.
 
@@ -395,3 +396,177 @@ A: It converts it directly: `cfg.DefaultAction == "allow"`. Any non-`"allow"` st
 - **Tests bypass `New()` using `stubMatcher()`** — unexported types are accessible within the same package. No Redis client needed for policy matching tests.
 - **`scopeValue()` is the only place that knows which identity value maps to which scope type.** Adding a new scope type (`user_id`, `tenant_id`) requires a change here and in `Match()`'s signature.
 - **Linear scan is fine for a small number of policies; a `map[string]compiledPolicy` is a drop-in upgrade for scale.**
+- **`OnErrorAllow()` exposes Redis-error behavior to the middleware.** Set from `cfg.OnLimiterError == "allow"` in `New()`. The middleware reads this to decide between 500 and pass-through on limiter errors.
+
+---
+
+# `internal/middleware` — Rate Limit Middleware
+
+---
+
+## 1. High-Level Purpose
+
+The middleware is where all the earlier work comes together. It intercepts every HTTP request flowing through the gateway, extracts the caller's identity, consults the policy engine, runs each rate limit check, and either forwards the request or returns a structured error response. Without it, the gateway is a dumb proxy — the algorithms, config, and policy matching all exist but have no effect on real traffic.
+
+---
+
+## 2. Core Concepts
+
+### Middleware pattern in Go
+In `net/http`, a middleware is a function that wraps an `http.Handler` and returns a new `http.Handler`. The outer handler adds behaviour before and/or after calling the inner handler. `RateLimit` is a factory: it accepts the `Matcher` once at startup and returns the actual middleware wrapper. The wrapper accepts `next http.Handler` (the proxy) and returns the final request handler. Calling `next.ServeHTTP(w, r)` is what forwards the request — not calling it short-circuits the chain.
+
+### Identity extraction
+Two identity values are extracted per request:
+- `X-API-Key` header — set by the client
+- Real IP — `X-Real-IP` header (set by nginx to `$remote_addr`), falling back to `r.RemoteAddr`
+
+`X-Real-IP` is preferred over `X-Forwarded-For` because it is set by our own nginx and is always exactly one IP. `X-Forwarded-For` can contain a chain of IPs and can be spoofed by the client by setting the header before it reaches nginx.
+
+### AND logic
+Every check in `[]Check` must pass. The loop short-circuits on the first failure — subsequent checks are never run. There is no OR logic anywhere in the enforcement path.
+
+### Four outcomes
+Every request through the middleware ends in one of four ways:
+1. **No policy match + `default_action: deny`** → 403 Forbidden
+2. **No policy match + `default_action: allow`** → pass through
+3. **Rate limit exceeded** → 429 Too Many Requests
+4. **Redis error** → 500 (if `on_limiter_error: deny`) or pass through (if `on_limiter_error: allow`)
+
+---
+
+## 3. Important Implementation Details
+
+**`RateLimit(matcher *policy.Matcher) func(http.Handler) http.Handler`** — three nested function literals. Outer: factory, called once at startup. Middle: middleware wrapper, receives `next`. Inner: request handler, called on every request.
+
+**`realIP(r *http.Request) string`** — prefers `X-Real-IP`, falls back to `net.SplitHostPort(r.RemoteAddr)` to strip the port. `r.RemoteAddr` in Go is always `host:port` — it cannot be used directly as a key without stripping the port.
+
+**`writeJSON(w http.ResponseWriter, code int, body string)`** — sets `Content-Type: application/json`, then writes status code and body. `http.Error` would override the Content-Type to `text/plain; charset=utf-8`. Writing manually avoids that.
+
+**Short-circuit discipline** — every error branch calls `return` immediately after writing a response or calling `next.ServeHTTP`. Once a response is started, any further write to `w` corrupts the HTTP response. The `return` on every branch enforces this invariant.
+
+**`/health` bypass** — `/health` is registered directly on the `http.ServeMux` before the middleware wraps the proxy. `loggingMiddleware` wraps the full mux (so `/health` is still logged), but the rate limit middleware only wraps the proxy. `/health` requests are never touched by rate limiting logic or Redis.
+
+---
+
+## 4. Interview Questions
+
+**Q: Why is `/health` exempt from rate limiting?**
+A: The rate limit middleware calls Redis to check counters. If Redis is down and `on_limiter_error: deny` is configured, the middleware returns 500. Docker uses `/health` to decide whether to route traffic to this gateway instance. If `/health` went through the middleware, a Redis outage would cause Docker to mark the gateway as unhealthy and pull it from rotation — even though the gateway process itself is fine. By wiring `/health` outside the middleware, Docker measures gateway liveness, not Redis availability.
+
+**Q: Why use `X-Real-IP` instead of `X-Forwarded-For`?**
+A: In a controlled deployment where nginx is our own load balancer, `X-Real-IP` is set to `$remote_addr` by our nginx config — always exactly one IP set by a trusted component. `X-Forwarded-For` accumulates across proxies and can be pre-set by the client before the request reaches nginx, making it spoofable. In a multi-proxy environment (CDN → nginx → gateway), you'd need `X-Forwarded-For` with a trusted-IP allowlist to extract the real client IP.
+
+**Q: What happens if `X-API-Key` is not provided?**
+A: `r.Header.Get("X-API-Key")` returns `""`. The Redis key becomes `/api/fast:api_key:` — a shared bucket for all unauthenticated requests on that endpoint. All unkeyed traffic competes for the same rate limit pool. This could be a security concern (one heavy user exhausts the pool for everyone) or an intentional collective cap. The middleware doesn't validate identity values; the operator must decide whether to reject empty API keys upstream.
+
+**Q: What is the difference between a 403 and a 429 response from this middleware?**
+A: 403 means no policy exists for the requested path and `default_action` is `deny` — the gateway has no authorization to let this path through. 429 means a policy was found but a rate limit was exceeded. From a client perspective: 403 suggests a misconfigured path or missing access; 429 suggests backing off and retrying.
+
+**Q: What happens when two scope checks both fail?**
+A: The first failure short-circuits the loop with a 429 and `return`. The second check is never evaluated. The client always sees one 429 — there's no "which limit did I hit" information in the response (by design; that would be information disclosure).
+
+**Q: How would you add `Retry-After` to the 429 response?**
+A: The Lua scripts currently return only 0/1. To support `Retry-After`, the scripts would need to return the time-to-next-token (Token Bucket) or time-until-window-reset (Sliding Window). The `Limiter` interface would need a richer return type, and the middleware would write the header before the 429 body. It's a non-trivial interface change affecting both algorithms.
+
+---
+
+## 5. Edge Cases and Failure Modes
+
+**Calling `next.ServeHTTP` after a partial write.** If code accidentally writes a 429 header and then calls `next.ServeHTTP`, the response is corrupted — HTTP only allows one status code per response. Every branch in the middleware ends with `return`, preventing this.
+
+**Empty `X-API-Key` producing a shared bucket.** All requests without an API key share one counter per path per IP scope. Whether this is desired depends on the operator's intent. The middleware does not validate identity values.
+
+**Redis unavailable at request time (not startup).** `policy.New()` succeeds even if Redis is unreachable at startup (go-redis connects lazily). The first request that triggers `Allow()` will surface the error. `on_limiter_error` controls the outcome. This is a deliberate design choice: the gateway can start and serve health checks even if Redis is temporarily unavailable.
+
+**`r.RemoteAddr` without a port.** Theoretically possible in edge cases. `net.SplitHostPort` returns an error; `realIP` falls back to returning `r.RemoteAddr` as-is, which is still a usable key string.
+
+---
+
+## 6. Modification Scenarios
+
+**Logging rejections.** Add `log.Printf("RATE_LIMITED path=%s key=%s", r.URL.Path, c.Key)` in the 429 branch and `log.Printf("NO_POLICY path=%s", r.URL.Path)` in the 403 branch. One line each.
+
+**Adding `X-RateLimit-Remaining` header.** The Lua scripts return 0 or 1. To return remaining capacity, change return value to a two-element table. Update `Allow()` return type to `(bool, int, error)`. Write `w.Header().Set("X-RateLimit-Remaining", strconv.Itoa(remaining))` before calling `next.ServeHTTP`.
+
+**Supporting dynamic cost based on request body size.** Read `r.ContentLength` in the middleware and override `c.Cost` before calling `c.Limiter.Allow(...)`. Currently cost is config-driven; dynamic cost requires no interface change — just a different value passed to `Allow`.
+
+---
+
+## 7. Must-Know Summary
+
+- **Middleware is a chain of handler wrappers.** Not calling `next.ServeHTTP` short-circuits the chain. Every error branch must `return` after writing a response.
+- **`/health` bypasses rate limiting** — registered directly on the mux before the middleware wraps the proxy. Docker health checks must not depend on Redis.
+- **Identity: `X-API-Key` (client-set) + `X-Real-IP` (nginx-set).** `X-Real-IP` is a single trusted IP; prefer it over `X-Forwarded-For` in a controlled environment.
+- **AND logic: every check must pass.** First failure returns 429 and stops.
+- **Four outcomes: 403 (no policy, closed), pass-through (no policy, open), 429 (rate limited), 500 or pass-through (Redis error, configurable via `on_limiter_error`).**
+- **`writeJSON` not `http.Error`** — `http.Error` forces `Content-Type: text/plain`; the gateway returns JSON errors consistently.
+- **go-redis connects lazily.** Redis unavailability surfaces at request time, not startup. `on_limiter_error` determines what happens.
+
+---
+
+# `cmd/gateway` — Gateway Entry Point
+
+---
+
+## 1. High-Level Purpose
+
+`main.go` is the wiring layer. It reads configuration, connects to Redis, builds the policy matcher, creates the HTTP server, and assembles the middleware chain. It contains no business logic — it delegates everything to the packages in `internal/`. Its job is to compose the components into a running server in the correct order.
+
+---
+
+## 2. Core Concepts
+
+### Startup sequence
+Config → Redis client → Policy Matcher → Proxy → Routes → Server. Each step depends on the previous. Any error in the startup sequence calls `log.Fatalf`, which logs and exits with code 1. Docker Compose detects the non-zero exit and reports the container as failed. This fail-fast approach makes misconfiguration visible immediately rather than serving broken responses.
+
+### Environment variables for portability
+Three env vars control runtime behavior:
+- `CONFIG_PATH` — which YAML config to load (default: `config/config.yaml`)
+- `BACKEND_URL` — where to proxy accepted requests (default: `http://localhost:8081`)
+- `REDIS_ADDR` — which Redis to connect to (default: `localhost:6379`)
+
+The same binary runs identically in local dev (localhost defaults) and in Docker (service-name addresses injected by Compose via `environment:`). No recompilation needed between environments.
+
+### Route registration
+`/health` is registered with a plain handler. `/` is registered with the rate-limit-wrapped proxy. `loggingMiddleware` wraps the full mux — every request is logged, including health checks. Rate limiting wraps only the proxy, so `/health` is logged but never rate limited.
+
+---
+
+## 3. Important Implementation Details
+
+**`config.Load(cfgPath)`** — reads and parses the YAML config. Fails fast if the file is missing or malformed. Called before Redis connects so configuration errors are caught first.
+
+**`gatewayredis.NewClient()`** — reads `REDIS_ADDR` and returns a configured `*goredis.Client`. Does not connect — go-redis is lazy. The connection is established on the first `Allow()` call.
+
+**`policy.New(cfg, redisClient)`** — compiles the full config into live limiter instances. This is the expensive work done once at startup. Unknown algorithm names or unparseable duration strings cause `New()` to return an error, which `log.Fatalf` turns into a startup failure.
+
+**`middleware.RateLimit(matcher)(proxy)`** — two calls chained. `RateLimit(matcher)` returns the middleware wrapper function. That function is immediately called with `proxy` as `next`, producing the final rate-limited handler.
+
+**`loggingMiddleware(mux)`** — wraps the entire mux. Registered as the outermost handler so it sees every request before any routing occurs.
+
+---
+
+## 4. Interview Questions
+
+**Q: Why not validate the Redis connection at startup with a `Ping()`?**
+A: go-redis connects lazily. A startup `Ping()` would add a hard requirement that Redis be reachable before the gateway can start — even if the gateway is configured with `on_limiter_error: allow` (fail-open). Validating lazily means the gateway can start, serve health checks, and handle `on_limiter_error` correctly even during a Redis outage. The `depends_on: redis: condition: service_healthy` in Docker Compose already ensures Redis is up before the gateway starts in the normal case.
+
+**Q: What's the startup failure behavior?**
+A: `log.Fatalf(format, args...)` is called on any startup error. It logs the message and calls `os.Exit(1)`. Docker Compose sees the non-zero exit code and marks the container as failed. This is preferable to starting a partially-broken gateway that returns 500 on every request.
+
+**Q: Why is `httputil.NewSingleHostReverseProxy` used instead of a custom HTTP client?**
+A: The standard library proxy handles header forwarding (including hop-by-hop header removal per RFC 7230), response streaming, and connection reuse via a shared transport. Writing an equivalent custom client correctly is significant work with no benefit for this use case.
+
+**Q: What controls startup order in Docker Compose?**
+A: The `depends_on` conditions in `docker-compose.yml`. Redis must pass `redis-cli ping` (healthy) before gateways start. mock-backend must be healthy before gateways start. Gateways must be healthy (via their `/health` endpoint) before nginx starts. This prevents nginx from routing to gateways that are still initializing.
+
+---
+
+## 5. Must-Know Summary
+
+- **`main.go` is a wiring layer, not a logic layer.** All business logic lives in `internal/`. `main` composes and starts.
+- **Fail-fast at startup.** Any config, parse, or compilation error calls `log.Fatalf` and exits 1.
+- **Three env vars:** `CONFIG_PATH`, `BACKEND_URL`, `REDIS_ADDR`. All have localhost defaults for local dev; Docker Compose injects production values.
+- **Route registration:** `/health` → plain handler. `/` → `RateLimit(matcher)(proxy)`. `loggingMiddleware` wraps the full mux.
+- **go-redis is lazy.** Redis connection is established on the first `Allow()` call, not at startup.
+- **Docker Compose startup order:** Redis healthy → gateways start → gateways healthy → nginx starts.

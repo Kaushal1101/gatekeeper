@@ -87,6 +87,26 @@ All five services run in Docker Compose on a private internal network. Clients o
 
 ---
 
+## ADR-008 — Health Endpoint Bypasses Rate Limit Middleware
+
+**Decision:** `/health` is registered directly on the mux before the rate limit middleware wraps the proxy. The middleware never sees health check requests.
+
+**Reason:** The rate limit middleware calls Redis to check counters. If Redis is unavailable, the middleware returns 500 (when `on_limiter_error: deny`). If `/health` went through the middleware, Docker's health check would receive that 500, mark the gateway as unhealthy, and nginx would stop routing traffic to it — even though the gateway process itself is perfectly functional. Bypassing the middleware for `/health` ensures Docker measures the liveness of the gateway process, not the availability of Redis.
+
+**Tradeoff:** The health endpoint does not validate Redis connectivity. A separate readiness probe endpoint (e.g. `/ready`) that explicitly pings Redis could be added if distinguishing liveness from readiness becomes necessary.
+
+---
+
+## ADR-009 — Configurable Limiter Error Behavior (`on_limiter_error`)
+
+**Decision:** A top-level `on_limiter_error` field in `config.yaml` controls what happens when a rate limiter returns an error (e.g. Redis is unreachable). `deny` returns 500 and blocks the request; `allow` passes the request through. Default is `deny`.
+
+**Reason:** The right behaviour when Redis is down depends on the use case. A payments API should block all traffic rather than risk unbounded load on a degraded backend (fail-closed). A read-heavy public API may prefer to stay available and accept the risk of temporarily unenforced limits (fail-open). Neither is universally correct, so the operator chooses explicitly.
+
+**Tradeoff:** `allow` during a Redis outage means rate limits are completely unenforced for the duration. `deny` means the gateway returns 500s to all rate-limited paths, which may be indistinguishable from a backend failure to the caller. Both are documented so the operator understands what they are choosing.
+
+---
+
 ## ADR-004 — Clock Injection for Deterministic Tests
 
 **Decision:** The core logic of each rate limiter is exposed as an unexported method accepting the current timestamp as a parameter (e.g. `allow(nowMs int64)`). The public `Allow()` method calls this with `time.Now().UnixMilli()`.
