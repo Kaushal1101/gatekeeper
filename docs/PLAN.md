@@ -35,11 +35,11 @@
 - [x] Hierarchical limit scopes (per IP, per user, per API key, per endpoint)
 
 ## Phase 4 — Gateway Integration
-- [ ] Request classification middleware
-- [ ] Policy lookup and rate limit enforcement
-- [ ] Allow/reject responses with appropriate headers
-- [ ] Fail-open / fail-closed modes (configurable)
-- [ ] Request forwarding to mock backend on allow
+- [x] Request classification middleware
+- [x] Policy lookup and rate limit enforcement
+- [x] Allow/reject responses with appropriate headers
+- [x] Fail-open / fail-closed modes (configurable)
+- [x] Request forwarding to mock backend on allow
 
 ## Phase 5 — Observability
 - [ ] Prometheus metrics: allowed/rejected counts, gateway latency, Redis latency, RPS, algorithm usage, failure counts

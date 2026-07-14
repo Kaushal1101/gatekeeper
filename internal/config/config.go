@@ -7,8 +7,9 @@ import (
 )
 
 type Config struct {
-	DefaultAction string   `yaml:"default_action"`
-	Policies      []Policy `yaml:"policies"`
+	DefaultAction  string   `yaml:"default_action"`
+	OnLimiterError string   `yaml:"on_limiter_error"`
+	Policies       []Policy `yaml:"policies"`
 }
 
 type Policy struct {

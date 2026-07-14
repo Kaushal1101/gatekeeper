@@ -18,8 +18,11 @@ services:
       dockerfile: docker/gateway.Dockerfile
     environment:
       - BACKEND_URL=http://mock-backend:8081
+      - REDIS_ADDR=redis:6379
     depends_on:
       mock-backend:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:8080/health"]
@@ -33,8 +36,11 @@ services:
       dockerfile: docker/gateway.Dockerfile
     environment:
       - BACKEND_URL=http://mock-backend:8081
+      - REDIS_ADDR=redis:6379
     depends_on:
       mock-backend:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:8080/health"]
@@ -56,3 +62,8 @@ services:
     image: redis:7-alpine
     ports:
       - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5

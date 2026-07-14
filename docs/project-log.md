@@ -91,3 +91,56 @@
 - **`default_action`** in YAML controls fail-open (`allow`) vs fail-closed (`deny`) for unmatched paths; no default-default — operator must be explicit
 
 ### Phase 3 status: complete
+
+---
+
+## 2026-07-10 — Phase 4 complete: Gateway Integration (branch: phase-2-rate-limiting)
+
+### Work completed
+- `internal/middleware/ratelimit.go` — `RateLimit(matcher *policy.Matcher) func(http.Handler) http.Handler`
+  - Extracts `X-API-Key` header and real client IP (`X-Real-IP` from nginx, fallback to `r.RemoteAddr`)
+  - Calls `matcher.Match(path, apiKey, ip)` → iterates `[]Check` in order (AND logic)
+  - Returns 403 if no policy matches and `default_action: deny`
+  - Returns 429 if any limiter returns false
+  - Returns 500 or passes through (configurable via `on_limiter_error`) if any limiter returns an error
+  - `writeJSON` helper ensures all error responses carry `Content-Type: application/json`
+- `cmd/gateway/main.go` — fully wired startup sequence:
+  - Loads config from `CONFIG_PATH` env var (default: `config/config.yaml`)
+  - Creates Redis client via `gatewayredis.NewClient()`
+  - Builds `policy.Matcher` from config + Redis client
+  - `/health` registered directly on mux (bypasses rate limiting)
+  - `/` wrapped: `middleware.RateLimit(matcher)(proxy)`
+  - `loggingMiddleware` wraps the full mux so all routes are logged
+- `internal/config/config.go` — added `OnLimiterError string` field (`yaml:"on_limiter_error"`)
+- `config/config.yaml` — added `on_limiter_error: deny` top-level field with comment
+- `internal/policy/policy.go` — added `onErrorAllow bool` to `Matcher`; `OnErrorAllow()` accessor method; `New()` sets it from `cfg.OnLimiterError == "allow"`
+- `docker-compose.yml` — added `REDIS_ADDR=redis:6379` to both gateways; added Redis `healthcheck` (`redis-cli ping`); gateways now `depends_on` Redis being healthy
+- `docker/gateway.Dockerfile` — added `COPY config/ config/` to final image stage so config YAML is present at runtime
+- `docs/architecture-decisions.md` — added ADR-008 (health endpoint bypass) and ADR-009 (configurable limiter error behavior)
+
+### Decisions made
+- **`/health` bypasses rate limiting** — registered directly on the mux before the middleware wraps the proxy; Docker health checks must not depend on Redis availability (ADR-008)
+- **`on_limiter_error` is configurable** — `deny` returns 500 (fail-closed, default); `allow` passes traffic through when Redis is down (fail-open); operator chooses explicitly (ADR-009)
+- **`Matcher.OnErrorAllow()` accessor** — middleware reads error behavior from the Matcher rather than accepting it as a separate constructor parameter; keeps error policy co-located with all other policy config
+- **`X-Real-IP` over `X-Forwarded-For`** — nginx sets `X-Real-IP: $remote_addr`; single trusted value, cannot be spoofed by client unlike `X-Forwarded-For`
+- **`writeJSON` not `http.Error`** — `http.Error` forces `Content-Type: text/plain`; the gateway returns structured JSON errors for all 4xx/5xx responses
+- **Redis healthcheck in Compose** — `redis-cli ping` as the check; gateways won't start until Redis is healthy, preventing startup failures from connection refused
+
+### Phase 4 status: complete
+
+---
+
+## 2026-07-14 — Phase 4 smoke test verified (branch: phase-2-rate-limiting)
+
+### Work completed
+- Smoke tested the full Docker Compose stack end-to-end:
+  - `GET /api/fast` with `X-API-Key: abc123` returns 200 correctly
+  - Spamming 105 requests returns all 200s (expected — `capacity: 100` with `refill_rate: 10` means the refill keeps pace with the loop; `/api/slow` with limit of 10 triggers 429s as expected)
+  - `GET /api/unknown` returns `{"error":"no policy for this path"}` (403) confirming policy engine and middleware are correctly wired
+- Confirmed all four Phase 4 decisions are captured in `docs/interviewnotes.md` (health bypass, on_limiter_error, writeJSON, X-Real-IP)
+- Removed duplicate local `.claude/commands/` directory — skills now sourced exclusively from global `~/.claude/commands/`
+
+### Decisions made
+- No new engineering decisions. Smoke test confirmed existing implementation is correct.
+
+### Phase 4 status: verified working end-to-end. Ready for Phase 5 (Observability).
