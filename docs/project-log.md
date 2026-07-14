@@ -127,3 +127,20 @@
 - **Redis healthcheck in Compose** — `redis-cli ping` as the check; gateways won't start until Redis is healthy, preventing startup failures from connection refused
 
 ### Phase 4 status: complete
+
+---
+
+## 2026-07-14 — Phase 4 smoke test verified (branch: phase-2-rate-limiting)
+
+### Work completed
+- Smoke tested the full Docker Compose stack end-to-end:
+  - `GET /api/fast` with `X-API-Key: abc123` returns 200 correctly
+  - Spamming 105 requests returns all 200s (expected — `capacity: 100` with `refill_rate: 10` means the refill keeps pace with the loop; `/api/slow` with limit of 10 triggers 429s as expected)
+  - `GET /api/unknown` returns `{"error":"no policy for this path"}` (403) confirming policy engine and middleware are correctly wired
+- Confirmed all four Phase 4 decisions are captured in `docs/interviewnotes.md` (health bypass, on_limiter_error, writeJSON, X-Real-IP)
+- Removed duplicate local `.claude/commands/` directory — skills now sourced exclusively from global `~/.claude/commands/`
+
+### Decisions made
+- No new engineering decisions. Smoke test confirmed existing implementation is correct.
+
+### Phase 4 status: verified working end-to-end. Ready for Phase 5 (Observability).
