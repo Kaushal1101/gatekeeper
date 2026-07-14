@@ -29,10 +29,10 @@
 - [x] Unit tests for both algorithms
 
 ## Phase 3 — Policy Engine
-- [ ] YAML config loader
-- [ ] Policy matching by endpoint, IP, user ID, API key
-- [ ] Weighted request costs (configurable cost per endpoint)
-- [ ] Hierarchical limit scopes (per IP, per user, per API key, per endpoint)
+- [x] YAML config loader
+- [x] Policy matching by endpoint, IP, user ID, API key
+- [x] Weighted request costs (configurable cost per endpoint)
+- [x] Hierarchical limit scopes (per IP, per user, per API key, per endpoint)
 
 ## Phase 4 — Gateway Integration
 - [ ] Request classification middleware

@@ -1,0 +1,46 @@
+default_action: deny  # "allow" = fail-open, "deny" = fail-closed
+
+policies:
+  - path: /api/fast
+    algorithm: token_bucket  # swap to "sliding_window" to compare
+    scopes:
+      - by: api_key
+        capacity: 100
+        refill_rate: 10
+        limit: 60
+        window: 60s
+      - by: ip
+        capacity: 200
+        refill_rate: 20
+        limit: 120
+        window: 60s
+
+  - path: /api/slow
+    algorithm: sliding_window
+    scopes:
+      - by: api_key
+        capacity: 20
+        refill_rate: 2
+        limit: 10
+        window: 60s
+      - by: ip
+        capacity: 40
+        refill_rate: 4
+        limit: 20
+        window: 60s
+
+  - path: /api/expensive
+    algorithm: token_bucket
+    scopes:
+      - by: api_key
+        cost: 5
+        capacity: 50
+        refill_rate: 5
+        limit: 10
+        window: 60s
+      - by: ip
+        cost: 5
+        capacity: 100
+        refill_rate: 10
+        limit: 20
+        window: 60s
