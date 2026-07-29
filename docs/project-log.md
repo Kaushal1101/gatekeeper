@@ -58,7 +58,6 @@
   - `slidingwindow.go` — same pattern as tokenbucket
   - `slidingwindow_test.go` — 6 tests including previous-window weighting verification
 - All 11 tests pass via miniredis (no real Redis required for tests)
-- `/interviewnotes` command created; `docs/interviewnotes.md` written for `internal/limiter`
 
 ### Decisions made
 - **Lua scripts for atomicity** — prevents TOCTOU race conditions across multiple gateway instances; simpler than WATCH/MULTI/EXEC
@@ -137,7 +136,6 @@
   - `GET /api/fast` with `X-API-Key: abc123` returns 200 correctly
   - Spamming 105 requests returns all 200s (expected — `capacity: 100` with `refill_rate: 10` means the refill keeps pace with the loop; `/api/slow` with limit of 10 triggers 429s as expected)
   - `GET /api/unknown` returns `{"error":"no policy for this path"}` (403) confirming policy engine and middleware are correctly wired
-- Confirmed all four Phase 4 decisions are captured in `docs/interviewnotes.md` (health bypass, on_limiter_error, writeJSON, X-Real-IP)
 - Removed duplicate local `.claude/commands/` directory — skills now sourced exclusively from global `~/.claude/commands/`
 
 ### Decisions made
