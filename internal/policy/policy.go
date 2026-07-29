@@ -31,8 +31,9 @@ type compiledPolicy struct {
 
 // Matcher maps an incoming request (path + api key + IP) to the set of Checks that must all pass.
 type Matcher struct {
-	policies     []compiledPolicy
-	defaultAllow bool
+	policies       []compiledPolicy
+	defaultAllow   bool
+	onErrorAllow   bool
 }
 
 func New(cfg *config.Config, redisClient *goredis.Client) (*Matcher, error) {
@@ -57,8 +58,12 @@ func New(cfg *config.Config, redisClient *goredis.Client) (*Matcher, error) {
 	return &Matcher{
 		policies:     policies,
 		defaultAllow: cfg.DefaultAction == "allow",
+		onErrorAllow: cfg.OnLimiterError == "allow",
 	}, nil
 }
+
+// OnErrorAllow reports whether requests should pass through when a limiter returns an error.
+func (m *Matcher) OnErrorAllow() bool { return m.onErrorAllow }
 
 // Match returns the Checks for the given request. The second return value reports
 // whether the request is allowed when no policy matches (the configured default action).

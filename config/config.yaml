@@ -1,4 +1,5 @@
-default_action: deny  # "allow" = fail-open, "deny" = fail-closed
+default_action: deny    # "allow" = fail-open, "deny" = fail-closed for unmatched paths
+on_limiter_error: deny  # "allow" = pass through when Redis is down, "deny" = return 500
 
 policies:
   - path: /api/fast
